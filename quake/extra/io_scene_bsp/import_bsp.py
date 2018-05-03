@@ -1,5 +1,7 @@
 import bpy
 import bmesh
+import math
+import numpy
 from mathutils import Matrix, Vector
 
 from .quake.bsp import Bsp, is_bspfile
@@ -76,68 +78,190 @@ def load(operator, context, filepath='',
             bpy.context.scene.objects.link(ob)
 
     # Create meshes
-    for mesh_index, mesh in enumerate(bsp.meshes()):
-        # Worldspawn is always mesh 0
-        if mesh_index == 0 and not use_worldspawn_entity:
-            continue
+    if True:
+        for model in bsp.models:
+            faces = bsp.faces[model.first_face:model.first_face + model.number_of_faces]
 
-        # Brush entities are the remaining meshes
-        if mesh_index > 0 and not use_brush_entities:
-            break
+            me = bpy.data.meshes.new('model.000')
+            bm = bmesh.new()
+            uv_layer = bm.loops.layers.uv.new()
 
-        me = bpy.data.meshes.new('model %d' % mesh_index)
-        bm = bmesh.new()
+            vertex_cache = {}
 
-        for vertex_index, vertex in enumerate(mesh.vertices):
-            v0 = bm.verts.new(vertex)
-            v0.normal = mesh.normals[vertex_index]
-            v0.co = global_matrix * v0.co
+            def create_vertex(index):
+                if index not in vertex_cache:
+                    bvert = bm.verts.new(bsp.vertexes[index][:])
+                    vertex_cache[index] = bvert
 
-        bm.verts.ensure_lookup_table()
-        uv_layer = bm.loops.layers.uv.new()
+                return vertex_cache[index]
 
-        for triangle in mesh.triangles:
-            t0 = bm.verts[triangle[0]]
-            t1 = bm.verts[triangle[1]]
-            t2 = bm.verts[triangle[2]]
+            def create_vertex(triple):
+                if triple not in vertex_cache:
+                    bvert = bm.verts.new(triple)
+                    bvert.co = global_matrix * bvert.co
+                    vertex_cache[triple] = bvert
 
-            try:
-                face = bm.faces.new((t0, t1, t2))
+                return vertex_cache[triple]
 
-                face.loops[0][uv_layer].uv = mesh.uvs[triangle[0]]
-                face.loops[1][uv_layer].uv = mesh.uvs[triangle[1]]
-                face.loops[2][uv_layer].uv = mesh.uvs[triangle[2]]
+            for face in faces:
+                texture_info = bsp.texture_infos[face.texture_info]
+                miptex = bsp.miptextures[texture_info.miptexture_number]
 
-            except:
-                # Ignore triangles that are defined multiple times
-                pass
+                s = texture_info.s
+                ds = texture_info.s_offset
+                t = texture_info.t
+                dt = texture_info.t_offset
 
-        bm.faces.ensure_lookup_table()
+                w = miptex.width
+                h = miptex.height
 
-        for sub_mesh_index, sub_mesh in enumerate(mesh.sub_meshes):
-            if not sub_mesh:
+                edges = bsp.surf_edges[face.first_edge:face.first_edge + face.number_of_edges]
+
+                verts = []
+                for edge in edges:
+                    v = bsp.edges[abs(edge)].vertexes
+
+                    # Flip edges with negative ids
+                    v0, v1 = v if edge > 0 else reversed(v)
+
+                    if len(verts) == 0:
+                        verts.append(v0)
+
+                    if v1 != verts[0]:
+                        verts.append(v1)
+
+                # Convert Vertexes to three-tuples and reverse their order
+                verts = [tuple(bsp.vertexes[i][:]) for i in reversed(verts)]
+
+                # Convert ST coordinate space to UV coordinate space
+                uvs = [((numpy.dot(v, s) + ds) / w, -(numpy.dot(v, t) + dt) / h) for v in verts]
+
+                # Create the vertexes
+                verts = [create_vertex(v) for v in verts]
+
+                bm.verts.ensure_lookup_table()
+
+                # Create the face
+                try:
+                    f0 = bm.faces.new(verts)
+
+                    # Apply UV coordinates to face
+                    for i, loop in enumerate(f0.loops):
+                        loop[uv_layer].uv = uvs[i]
+
+                    # Apply material to face
+                    mat = bpy.data.materials.find(miptex.name)
+                    f0.material_index = mat
+
+                    # Lightmaps
+                    vs = [v.co for f in verts]
+                    a = numpy.subtract(vs[0], vs[1])
+                    b = numpy.subtract(vs[0], vs[2])
+                    nor = tuple(numpy.cross(a, b))
+                    axis = nor.index(max(nor))
+                    projected_verts = [v[:axis] + v[axis + 1:] for v in vs]
+
+                    min_x, min_y = projected_verts[0]
+                    max_x, max_y = projected_verts[0]
+
+                    for v in projected_verts[1:]:
+                        min_x = min(min_x, v[0])
+                        min_y = min(min_y, v[1])
+                        max_x = max(max_x, v[0])
+                        max_y = max(max_y, v[1])
+
+                    top_left = math.floor(min_x / 16), math.floor(min_y / 16)
+                    bottom_right = math.ceil(max_x / 16), math.floor(max_y / 16)
+                    size = tuple(numpy.subtract(bottom_right, top_left))
+                    length = size[0] * size[1]
+                    offset = face.light_offset
+                    light_data = bsp.lighting[offset:offset+length]
+
+                except:
+                    pass
+
+                bm.faces.ensure_lookup_table()
+
+            bm.to_mesh(me)
+            bm.free()
+
+            mesh_name = 'model.000'
+
+            if bsp.models.index(model) == 0:
+                mesh_name = 'worldspawn'
+
+            ob = bpy.data.objects.new(mesh_name, me)
+
+            # Ensure correct behavior in texture view mode
+            for miptexture_index in range(len(bsp.miptextures)):
+                ob.data.materials.append(bpy.data.materials[miptexture_index])
+
+            bpy.context.scene.objects.link(ob)
+
+
+    else:
+        for mesh_index, mesh in enumerate(bsp.meshes()):
+            # Worldspawn is always mesh 0
+            if mesh_index == 0 and not use_worldspawn_entity:
                 continue
 
-            name = bsp.miptextures[sub_mesh_index].name
-            mat = bpy.data.materials.find(name)
+            # Brush entities are the remaining meshes
+            if mesh_index > 0 and not use_brush_entities:
+                break
 
-            for triangle in sub_mesh:
-                bm.faces[triangle].material_index = mat
+            me = bpy.data.meshes.new('model %d' % mesh_index)
+            bm = bmesh.new()
 
-        bm.to_mesh(me)
-        bm.free()
+            for vertex_index, vertex in enumerate(mesh.vertices):
+                v0 = bm.verts.new(vertex)
+                v0.normal = mesh.normals[vertex_index]
+                v0.co = global_matrix * v0.co
 
-        mesh_name = 'brush_entity.000'
+            bm.verts.ensure_lookup_table()
+            uv_layer = bm.loops.layers.uv.new()
 
-        if mesh_index == 0:
-            mesh_name = 'worldspawn'
+            for triangle in mesh.triangles:
+                t0 = bm.verts[triangle[0]]
+                t1 = bm.verts[triangle[1]]
+                t2 = bm.verts[triangle[2]]
 
-        ob = bpy.data.objects.new(mesh_name, me)
+                try:
+                    face = bm.faces.new((t0, t1, t2))
 
-        for miptexture_index in range(len(bsp.miptextures)):
-            ob.data.materials.append(bpy.data.materials[miptexture_index])
+                    face.loops[0][uv_layer].uv = mesh.uvs[triangle[0]]
+                    face.loops[1][uv_layer].uv = mesh.uvs[triangle[1]]
+                    face.loops[2][uv_layer].uv = mesh.uvs[triangle[2]]
 
-        bpy.context.scene.objects.link(ob)
+                except:
+                    # Ignore triangles that are defined multiple times
+                    pass
+
+            bm.faces.ensure_lookup_table()
+
+            for sub_mesh_index, sub_mesh in enumerate(mesh.sub_meshes):
+                if not sub_mesh:
+                    continue
+
+                name = bsp.miptextures[sub_mesh_index].name
+                mat = bpy.data.materials.find(name)
+
+                for triangle in sub_mesh:
+                    bm.faces[triangle].material_index = mat
+
+            bm.to_mesh(me)
+            bm.free()
+
+            mesh_name = 'brush_entity.000'
+
+            if mesh_index == 0:
+                mesh_name = 'worldspawn'
+
+            ob = bpy.data.objects.new(mesh_name, me)
+
+            for miptexture_index in range(len(bsp.miptextures)):
+                ob.data.materials.append(bpy.data.materials[miptexture_index])
+
+            bpy.context.scene.objects.link(ob)
 
     # Apply textures to faces
     for ob in [o for o in bpy.data.objects if o.type == 'MESH']:
