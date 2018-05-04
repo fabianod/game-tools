@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 __all__ = ['KdRegionTree', 'KdRegionTreeError']
 
 
@@ -14,8 +16,8 @@ class Rect(object):
     x = property(lambda self: self.top_left[0])
     y = property(lambda self: self.top_left[1])
     size = property(lambda self: self._size)
-    width = property(lambda self: self.size[0])
-    height = property(lambda self: self.size[1])
+    width = property(lambda self: self._size[0])
+    height = property(lambda self: self._size[1])
     top = property(lambda self: self.y)
     left = property(lambda self: self.x)
     right = property(lambda self: self.left + self.width)
@@ -111,6 +113,27 @@ class KdRegionTree(object):
         return self._root.insert(rect)
 
 
+PackResult = namedtuple('PackResult', ['atlas_size', 'offsets'])
+
+
+class AtlasPacker(object):
+    @staticmethod
+    def pack(images, size=None):
+        if not size:
+            area = sum([i.width * i.height for i in images])
+            side = 1 << (int(math.sqrt(area)) - 1).bit_length()
+            size = side, side
+
+        sorted_images = sorted(images, key=lambda i: min(i.size) * i.width * i.height, reverse=True)
+        image_mapping = [images.index(i) for i in sorted_images]
+
+        tree = KdRegionTree(size)
+        offsets = [tree.insert(i) for i in sorted_images]
+        offsets = [offsets[j] for j in image_mapping]
+
+        return PackResult(size, offsets)
+
+
 if __name__ == '__main__':
     from PIL import Image
     import glob
@@ -122,26 +145,31 @@ if __name__ == '__main__':
     images_paths = [g for g in glob.glob(glob_pattern)]
     images = [Image.open(file) for file in images_paths if os.path.getsize(file)]
 
-    #images = sorted(images, key=lambda i: i.width * i.height, reverse=True)
-    #images = sorted(images, key=lambda i: min(i.width, i.height), reverse=True)
-    images = sorted(images, key=lambda i: min(i.width, i.height) * i.width * i.height, reverse=True)
+    # Sort using area weighted by shortest edge.
+    # NOTE: This is not necessary but yields nicer (more dense) results.
+    #images = sorted(images, key=lambda i: min(i.size) * i.width * i.height, reverse=True)
 
+    # Calculate nearest power of two for atlas size
     area = sum([i.width * i.height for i in images])
-    side = int(math.sqrt(area))
-    np2 = 1<<(side - 1).bit_length()
+    side = 1 << (int(math.sqrt(area)) - 1).bit_length()
+    size = side, side
 
-    size = np2, np2
+    # Pack images
     atlas = KdRegionTree(size)
+    offsets = [atlas.insert(image) for image in images]
 
-    rects = [Rect(size=image.size) for image in images]
-    print('Packing {} images.'.format(len(rects)))
-    offsets = [atlas.insert(rect) for rect in rects]
-    print('Successfully packed {} images.'.format(len([o for o in offsets if o])))
+    size, offsets = AtlasPacker.pack(images)
 
+    total_images = len(images)
+    packed_images = len([o for o in offsets if o])
+    print('Successfully packed {} of {} images.'.format(packed_images, total_images))
+
+    # Create atlas image
     sheet = Image.new('RGBA', size)
-    fill_color = 0, 255 , 255
+    fill_color = 0, 255, 255
     sheet.paste(fill_color, [0, 0, *size])
 
+    # Composite image
     for image_index, image in enumerate(images):
         if not offsets[image_index]:
             continue
@@ -150,5 +178,3 @@ if __name__ == '__main__':
         sheet.paste(image, offset)
 
     sheet.show()
-
-    print()
