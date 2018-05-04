@@ -147,43 +147,6 @@ def load(operator, context, filepath='',
                     for i, loop in enumerate(bface.loops):
                         loop[uv_layer].uv = uvs[i]
 
-                    # Lightmaps
-                    vs = verts[:]
-                    a = numpy.subtract(vs[0], vs[1])
-                    b = numpy.subtract(vs[0], vs[2])
-                    face_normal = tuple(map(abs, numpy.cross(a, b)))
-                    axis = face_normal.index(max(face_normal))
-                    projected_verts = [v[:axis] + v[axis + 1:] for v in vs]
-
-                    min_x, min_y = projected_verts[0]
-                    max_x, max_y = projected_verts[0]
-
-                    for v in projected_verts[1:]:
-                        min_x = min(min_x, v[0])
-                        min_y = min(min_y, v[1])
-                        max_x = max(max_x, v[0])
-                        max_y = max(max_y, v[1])
-
-                    top_left = math.floor(min_x / 16), math.floor(
-                        min_y / 16)
-                    bottom_right = math.ceil(max_x / 16), math.floor(
-                        max_y / 16)
-                    size = tuple(numpy.subtract(bottom_right, top_left))
-                    size = size[0] + 1, size[1] + 1
-                    length = size[0] * size[1]
-
-                    # Convert luxels to pixels
-                    offset = face.light_offset
-                    light_data = bsp.lighting[offset:offset + length]
-                    pixels = []
-                    for luxel in light_data:
-                        r = g = b = luxel / 255
-                        pixels += r, g, b, 1.0
-
-                    img = bpy.data.images.new('Lightmap.000', *size)
-                    img.pixels[:] = pixels
-                    img.update()
-
                     # Apply material to face
                     mat = bpy.data.materials.find(miptex.name)
                     bface.material_index = mat
@@ -191,20 +154,58 @@ def load(operator, context, filepath='',
                 except:
                     pass
 
-                #lightmap_uvs = []
-                #lightmap_offset = -min_x, -min_y
-                #for v in projected_verts:
-                #    v = numpy.multiply(v, 16)
-                #    v = numpy.add(v, lightmap_offset)
-                #    v = numpy.divide(v, size)
-                #    lightmap_uvs.append(tuple(v))
-                #
-                #for i, loop in enumerate(bface.loops):
-                #    loop[lightmap_layer].uv = lightmap_uvs[i]
+                # Lightmaps
+                vs = verts[:]
+                a = numpy.subtract(vs[0], vs[1])
+                b = numpy.subtract(vs[0], vs[2])
+                face_normal = tuple(map(abs, numpy.cross(a, b)))
+                axis = face_normal.index(max(face_normal))
+                projected_verts = [v[:axis] + v[axis + 1:] for v in vs]
 
-                #info = LightMapFaceInfo(size, pixels, lightmap_uvs)
+                min_x, min_y = projected_verts[0]
+                max_x, max_y = projected_verts[0]
 
+                for v in projected_verts[1:]:
+                    min_x = min(min_x, v[0])
+                    min_y = min(min_y, v[1])
+                    max_x = max(max_x, v[0])
+                    max_y = max(max_y, v[1])
 
+                top_left = math.floor(min_x / 16), math.floor(min_y / 16)
+                bottom_right = math.ceil(max_x / 16), math.floor(max_y / 16)
+                scale = tuple(numpy.subtract(bottom_right, top_left))
+                size = scale[0] + 1, scale[1] + 1
+                length = size[0] * size[1]
+
+                # Convert luxels to pixels
+                offset = face.light_offset
+                pixels = []
+
+                if offset >= 0:
+                    light_data = bsp.lighting[offset:offset + length]
+                    for luxel in light_data:
+                        r = g = b = luxel / 255
+                        pixels += r, g, b, 1.0
+
+                else:
+                    pixels = (0, 0, 0, 1.0) * length
+
+                img = bpy.data.images.new('Lightmap.000', *size)
+                img.pixels[:] = pixels
+                img.update()
+
+                lightmap_uvs = []
+                lightmap_offset = -min_x, -min_y
+                for v in projected_verts:
+                    #v = numpy.multiply(v, 16)
+                    v = numpy.add(v, lightmap_offset)
+                    v = numpy.divide(v, numpy.multiply(scale, 16))
+                    lightmap_uvs.append(tuple(v))
+
+                for i, loop in enumerate(bface.loops):
+                    loop[lightmap_layer].uv = lightmap_uvs[i]
+
+                info = LightMapFaceInfo(size, pixels, lightmap_uvs)
 
                 bm.faces.ensure_lookup_table()
 
