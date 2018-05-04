@@ -2,10 +2,14 @@ import bpy
 import bmesh
 import math
 import numpy
+from collections import namedtuple
 from mathutils import Matrix, Vector
 
 from .quake.bsp import Bsp, is_bspfile
 from .quake import map as Map
+
+
+LightMapFaceInfo = namedtuple('LightMapStruct', ['size', 'pixels', 'uvs'])
 
 
 def load(operator, context, filepath='',
@@ -85,15 +89,10 @@ def load(operator, context, filepath='',
             me = bpy.data.meshes.new('model.000')
             bm = bmesh.new()
             uv_layer = bm.loops.layers.uv.new()
+            lightmap_layer = bm.loops.layers.uv.new()
 
             vertex_cache = {}
-
-            def create_vertex(index):
-                if index not in vertex_cache:
-                    bvert = bm.verts.new(bsp.vertexes[index][:])
-                    vertex_cache[index] = bvert
-
-                return vertex_cache[index]
+            lightmap_infos = []
 
             def create_vertex(triple):
                 if triple not in vertex_cache:
@@ -103,7 +102,7 @@ def load(operator, context, filepath='',
 
                 return vertex_cache[triple]
 
-            for face in faces:
+            for face_index, face in enumerate(faces):
                 texture_info = bsp.texture_infos[face.texture_info]
                 miptex = bsp.miptextures[texture_info.miptexture_number]
 
@@ -137,28 +136,23 @@ def load(operator, context, filepath='',
                 uvs = [((numpy.dot(v, s) + ds) / w, -(numpy.dot(v, t) + dt) / h) for v in verts]
 
                 # Create the vertexes
-                verts = [create_vertex(v) for v in verts]
-
+                bverts = [create_vertex(v) for v in verts]
                 bm.verts.ensure_lookup_table()
 
                 # Create the face
                 try:
-                    f0 = bm.faces.new(verts)
+                    bface = bm.faces.new(bverts)
 
                     # Apply UV coordinates to face
-                    for i, loop in enumerate(f0.loops):
+                    for i, loop in enumerate(bface.loops):
                         loop[uv_layer].uv = uvs[i]
 
-                    # Apply material to face
-                    mat = bpy.data.materials.find(miptex.name)
-                    f0.material_index = mat
-
                     # Lightmaps
-                    vs = [v.co for f in verts]
+                    vs = verts[:]
                     a = numpy.subtract(vs[0], vs[1])
                     b = numpy.subtract(vs[0], vs[2])
-                    nor = tuple(numpy.cross(a, b))
-                    axis = nor.index(max(nor))
+                    face_normal = tuple(map(abs, numpy.cross(a, b)))
+                    axis = face_normal.index(max(face_normal))
                     projected_verts = [v[:axis] + v[axis + 1:] for v in vs]
 
                     min_x, min_y = projected_verts[0]
@@ -170,17 +164,54 @@ def load(operator, context, filepath='',
                         max_x = max(max_x, v[0])
                         max_y = max(max_y, v[1])
 
-                    top_left = math.floor(min_x / 16), math.floor(min_y / 16)
-                    bottom_right = math.ceil(max_x / 16), math.floor(max_y / 16)
+                    top_left = math.floor(min_x / 16), math.floor(
+                        min_y / 16)
+                    bottom_right = math.ceil(max_x / 16), math.floor(
+                        max_y / 16)
                     size = tuple(numpy.subtract(bottom_right, top_left))
+                    size = size[0] + 1, size[1] + 1
                     length = size[0] * size[1]
+
+                    # Convert luxels to pixels
                     offset = face.light_offset
-                    light_data = bsp.lighting[offset:offset+length]
+                    light_data = bsp.lighting[offset:offset + length]
+                    pixels = []
+                    for luxel in light_data:
+                        r = g = b = luxel / 255
+                        pixels += r, g, b, 1.0
+
+                    img = bpy.data.images.new('Lightmap.000', *size)
+                    img.pixels[:] = pixels
+                    img.update()
+
+                    # Apply material to face
+                    mat = bpy.data.materials.find(miptex.name)
+                    bface.material_index = mat
 
                 except:
                     pass
 
+                #lightmap_uvs = []
+                #lightmap_offset = -min_x, -min_y
+                #for v in projected_verts:
+                #    v = numpy.multiply(v, 16)
+                #    v = numpy.add(v, lightmap_offset)
+                #    v = numpy.divide(v, size)
+                #    lightmap_uvs.append(tuple(v))
+                #
+                #for i, loop in enumerate(bface.loops):
+                #    loop[lightmap_layer].uv = lightmap_uvs[i]
+
+                #info = LightMapFaceInfo(size, pixels, lightmap_uvs)
+
+
+
                 bm.faces.ensure_lookup_table()
+
+            #sizes = [i.size for i in lightmap_infos]
+            #area = sum([width * height for width, height in sizes])
+            #lightmap_size = 1 << (int(math.sqrt(area)) - 1).bit_length()
+            #img = bpy.data.images.new('Lightmap', lightmap_size, lightmap_size)
 
             bm.to_mesh(me)
             bm.free()
@@ -193,71 +224,6 @@ def load(operator, context, filepath='',
             ob = bpy.data.objects.new(mesh_name, me)
 
             # Ensure correct behavior in texture view mode
-            for miptexture_index in range(len(bsp.miptextures)):
-                ob.data.materials.append(bpy.data.materials[miptexture_index])
-
-            bpy.context.scene.objects.link(ob)
-
-
-    else:
-        for mesh_index, mesh in enumerate(bsp.meshes()):
-            # Worldspawn is always mesh 0
-            if mesh_index == 0 and not use_worldspawn_entity:
-                continue
-
-            # Brush entities are the remaining meshes
-            if mesh_index > 0 and not use_brush_entities:
-                break
-
-            me = bpy.data.meshes.new('model %d' % mesh_index)
-            bm = bmesh.new()
-
-            for vertex_index, vertex in enumerate(mesh.vertices):
-                v0 = bm.verts.new(vertex)
-                v0.normal = mesh.normals[vertex_index]
-                v0.co = global_matrix * v0.co
-
-            bm.verts.ensure_lookup_table()
-            uv_layer = bm.loops.layers.uv.new()
-
-            for triangle in mesh.triangles:
-                t0 = bm.verts[triangle[0]]
-                t1 = bm.verts[triangle[1]]
-                t2 = bm.verts[triangle[2]]
-
-                try:
-                    face = bm.faces.new((t0, t1, t2))
-
-                    face.loops[0][uv_layer].uv = mesh.uvs[triangle[0]]
-                    face.loops[1][uv_layer].uv = mesh.uvs[triangle[1]]
-                    face.loops[2][uv_layer].uv = mesh.uvs[triangle[2]]
-
-                except:
-                    # Ignore triangles that are defined multiple times
-                    pass
-
-            bm.faces.ensure_lookup_table()
-
-            for sub_mesh_index, sub_mesh in enumerate(mesh.sub_meshes):
-                if not sub_mesh:
-                    continue
-
-                name = bsp.miptextures[sub_mesh_index].name
-                mat = bpy.data.materials.find(name)
-
-                for triangle in sub_mesh:
-                    bm.faces[triangle].material_index = mat
-
-            bm.to_mesh(me)
-            bm.free()
-
-            mesh_name = 'brush_entity.000'
-
-            if mesh_index == 0:
-                mesh_name = 'worldspawn'
-
-            ob = bpy.data.objects.new(mesh_name, me)
-
             for miptexture_index in range(len(bsp.miptextures)):
                 ob.data.materials.append(bpy.data.materials[miptexture_index])
 
