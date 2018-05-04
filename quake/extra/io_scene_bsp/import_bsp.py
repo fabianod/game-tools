@@ -5,6 +5,7 @@ import numpy
 from collections import namedtuple
 from mathutils import Matrix, Vector
 
+from . import atlas_packer
 from .quake.bsp import Bsp, is_bspfile
 from .quake import map as Map
 
@@ -105,6 +106,9 @@ def load(operator, context, filepath='',
             for face_index, face in enumerate(faces):
                 texture_info = bsp.texture_infos[face.texture_info]
                 miptex = bsp.miptextures[texture_info.miptexture_number]
+                if not miptex:
+                    print('Missing miptex info for face: {}'.format(face_index))
+                    continue
 
                 s = texture_info.s
                 ds = texture_info.s_offset
@@ -190,29 +194,44 @@ def load(operator, context, filepath='',
                 else:
                     pixels = (0, 0, 0, 1.0) * length
 
-                img = bpy.data.images.new('Lightmap.000', *size)
-                img.pixels[:] = pixels
-                img.update()
+                #img = bpy.data.images.new('Lightmap.000', *size)
+                #img.pixels[:] = pixels
+                #img.update()
 
                 lightmap_uvs = []
                 lightmap_offset = -min_x, -min_y
                 for v in projected_verts:
-                    #v = numpy.multiply(v, 16)
                     v = numpy.add(v, lightmap_offset)
-                    v = numpy.divide(v, numpy.multiply(scale, 16))
+                    v = numpy.divide(v, numpy.add(numpy.multiply(scale, 16), (1, 1)))
                     lightmap_uvs.append(tuple(v))
 
-                for i, loop in enumerate(bface.loops):
-                    loop[lightmap_layer].uv = lightmap_uvs[i]
+                #for i, loop in enumerate(bface.loops):
+                #    loop[lightmap_layer].uv = lightmap_uvs[i]
 
                 info = LightMapFaceInfo(size, pixels, lightmap_uvs)
+                lightmap_infos.append(info)
 
                 bm.faces.ensure_lookup_table()
 
-            #sizes = [i.size for i in lightmap_infos]
-            #area = sum([width * height for width, height in sizes])
-            #lightmap_size = 1 << (int(math.sqrt(area)) - 1).bit_length()
-            #img = bpy.data.images.new('Lightmap', lightmap_size, lightmap_size)
+            atlas_size, atlas_offsets = atlas_packer.pack(lightmap_infos)
+            lightmap_img = bpy.data.images.new('Lightmap', *atlas_size)
+            lightmap_img.pixels = (1, 0, 1, 1) * atlas_size[0] * atlas_size[1]
+            pixels = numpy.array(lightmap_img.pixels[:])
+            w, h = atlas_size
+            pixels = pixels.reshape((h, w * 4))
+
+            for i, lightmap_info in enumerate(lightmap_infos):
+                lightmap_pixels = numpy.array(lightmap_info.pixels)
+                width, height = lightmap_info.size
+                lightmap_pixels = lightmap_pixels.reshape((height, width * 4))
+
+                x, y = atlas_offsets[i]
+                pixels[y:y + height, x * 4:x * 4 + (width * 4)] = lightmap_pixels
+
+            pixels = numpy.array(list(reversed(pixels)))
+            pixels = pixels.reshape(len(lightmap_img.pixels))
+            lightmap_img.pixels[:] = pixels
+            lightmap_img.update()
 
             bm.to_mesh(me)
             bm.free()
