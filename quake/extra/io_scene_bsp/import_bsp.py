@@ -32,6 +32,7 @@ def load(operator, context, filepath='',
     point_entities = Map.loads(bsp.entities)
 
     # Create materials
+    print('Creating Materials...')
     images = bsp.images()
     for i, image in enumerate(images):
         if image is None:
@@ -72,16 +73,21 @@ def load(operator, context, filepath='',
 
     global_matrix  = Matrix.Scale(global_scale, 4)
 
+    print('Creating Point Entities...')
     # Create point entities
     if use_point_entities:
         for entity in [_ for _ in point_entities if hasattr(_, 'origin')]:
-            vec = tuple(map(int, entity.origin.split(' ')))
-            ob = bpy.data.objects.new(entity.classname + '.000', None)
-            ob.location = Vector(vec) * global_scale
-            ob.empty_draw_size = 16 * global_scale
-            ob.empty_draw_type = 'CUBE'
-            bpy.context.scene.objects.link(ob)
+            try:
+                vec = tuple(map(int, entity.origin.split(' ')))
+                ob = bpy.data.objects.new(entity.classname + '.000', None)
+                ob.location = Vector(vec) * global_scale
+                ob.empty_draw_size = 16 * global_scale
+                ob.empty_draw_type = 'CUBE'
+                bpy.context.scene.objects.link(ob)
+            except:
+                pass
 
+    print('Creating Meshes...')
     # Create meshes
     if True:
         for model in bsp.models:
@@ -104,6 +110,7 @@ def load(operator, context, filepath='',
                 return vertex_cache[triple]
 
             for face_index, face in enumerate(faces):
+                print('Processing face {}'.format(face_index))
                 texture_info = bsp.texture_infos[face.texture_info]
                 miptex = bsp.miptextures[texture_info.miptexture_number]
                 if not miptex:
@@ -194,15 +201,11 @@ def load(operator, context, filepath='',
                 else:
                     pixels = (0, 0, 0, 1.0) * length
 
-                #img = bpy.data.images.new('Lightmap.000', *size)
-                #img.pixels[:] = pixels
-                #img.update()
-
                 lightmap_uvs = []
                 lightmap_offset = -min_x, -min_y
                 for v in projected_verts:
                     v = numpy.add(v, lightmap_offset)
-                    v = numpy.divide(v, numpy.add(numpy.multiply(scale, 16), (1, 1)))
+                    #v = numpy.divide(v, numpy.multiply(scale, 16))
                     lightmap_uvs.append(tuple(v))
 
                 #for i, loop in enumerate(bface.loops):
@@ -213,14 +216,24 @@ def load(operator, context, filepath='',
 
                 bm.faces.ensure_lookup_table()
 
+            # Lightmaps
+            print('Creating Lightmap...')
+            # Pack images
             atlas_size, atlas_offsets = atlas_packer.pack(lightmap_infos)
+
+            # Create lightmap texture
             lightmap_img = bpy.data.images.new('Lightmap', *atlas_size)
             lightmap_img.pixels = (1, 0, 1, 1) * atlas_size[0] * atlas_size[1]
             pixels = numpy.array(lightmap_img.pixels[:])
             w, h = atlas_size
             pixels = pixels.reshape((h, w * 4))
 
+            # Composite lightmap texture
             for i, lightmap_info in enumerate(lightmap_infos):
+                if not atlas_offsets[i]:
+                    print('Failed to find lightmap {}'.format(i))
+                    continue
+
                 lightmap_pixels = numpy.array(lightmap_info.pixels)
                 width, height = lightmap_info.size
                 lightmap_pixels = lightmap_pixels.reshape((height, width * 4))
@@ -228,7 +241,15 @@ def load(operator, context, filepath='',
                 x, y = atlas_offsets[i]
                 pixels[y:y + height, x * 4:x * 4 + (width * 4)] = lightmap_pixels
 
-            pixels = numpy.array(list(reversed(pixels)))
+                face = bm.faces[i]
+                for j, loop in enumerate(face.loops):
+                    uv_coord = lightmap_uvs[j]
+                    uv_coord = numpy.divide(uv_coord, atlas_size)
+                    uv_coord = numpy.divide(uv_coord, (16, 16))
+                    uv_coord = numpy.add(uv_coord, numpy.divide((x, y), (32, 32)))
+                    loop[lightmap_layer].uv = uv_coord
+
+            #pixels = numpy.array(list(reversed(pixels)))
             pixels = pixels.reshape(len(lightmap_img.pixels))
             lightmap_img.pixels[:] = pixels
             lightmap_img.update()

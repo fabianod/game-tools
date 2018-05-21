@@ -38,7 +38,8 @@ class Node(Rect):
         'size',
         'bucket',
         'left_child',
-        'right_child'
+        'right_child',
+        'full'
     )
 
     def __init__(self, top_left=(0, 0), size=(0,0)):
@@ -46,11 +47,31 @@ class Node(Rect):
         self.bucket = None
         self.left_child = None
         self.right_child = None
+        self.full = min(size) == 0
+
+    def contains(self, other):
+        if self.full:
+            return False
+
+        if self.left_child:
+            self.full = self.left_child.full and self.right_child.full
+            if self.full:
+                return False
+
+        return super().contains(other)
 
     def insert(self, node):
+        if self.full:
+            return None
+
         # Recursive case
         if self.bucket:
-            return self.left_child.insert(node) or self.right_child.insert(node)
+            result = self.left_child.insert(node) or self.right_child.insert(node)
+
+            if not result:
+                self.full = self.left_child.full and self.right_child.full
+
+            return result
 
         # Is this node large enough to contain target node
         if not self.contains(node):
@@ -121,7 +142,6 @@ def pack(regions, size=None):
     if not size:
         area = sum([r.size[0] * r.size[1] for r in regions])
         side = 1 << (int(math.sqrt(area)) - 1).bit_length()
-        #side = int(math.sqrt(area * 1.25))
 
         if area * 1.2 < side * side * 0.5:
             size = side // 2, side
@@ -134,7 +154,14 @@ def pack(regions, size=None):
 
     # Insert into tree
     tree = KdRegionTree(size)
-    offsets = [(index, tree.insert(image)) for index, image in sorted_es]
+    #offsets = [(index, tree.insert(image)) for index, image in sorted_es]
+    offsets = []
+    count = 0
+    for index, image in sorted_es:
+        print('Inserting region {} of {}'.format(count, len(regions)))
+        count += 1
+        offset = tree.insert(image)
+        offsets.append((index, offset))
 
     # Reorder offsets back to given image order
     unsorted_offsets = sorted(offsets, key=lambda i: i[0])
@@ -144,6 +171,18 @@ def pack(regions, size=None):
 
 
 if __name__ == '__main__':
+
+    """
+    import timeit
+    data = [Rect(size=(8,8)) for _ in range(20000)]
+
+    def my_function():
+        pack(data)
+
+    print(timeit.timeit(my_function, number=1))
+    quit()
+    """
+
     from PIL import Image
     import glob
     import os
